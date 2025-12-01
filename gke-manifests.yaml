@@ -1,0 +1,86 @@
+# This Kubernetes Service Account (KSA) will be used by your application's pods.
+# It is linked to a Google Service Account (GSA) via the annotation for Workload Identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: processpayments-sa
+  # IMPORTANT: Replace with your Google Service Account email.
+  annotations:
+    iam.gke.io/gcp-service-account: "processpayments-gsa@kubecon-kafka.iam.gserviceaccount.com"
+---
+# A headless service is required by the StatefulSet to provide a stable
+# network domain for each pod (e.g., processpayments-0.processpayments-headless.default.svc.cluster.local)
+apiVersion: v1
+kind: Service
+metadata:
+  name: processpayments-headless
+spec:
+  # 'None' makes this a headless service.
+  clusterIP: None
+  selector:
+    app: processpayments
+---
+# The StatefulSet manages the deployment and scaling of your stateful application pods.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: processpayments
+spec:
+  # The serviceName must match the name of the headless service.
+  serviceName: "processpayments-headless"
+  replicas: 1 # You can scale this; each replica gets its own persistent volume.
+  selector:
+    matchLabels:
+      app: processpayments
+  template:
+    metadata:
+      labels:
+        app: processpayments
+    spec:
+      # The pod will run as this Kubernetes Service Account.
+      serviceAccountName: processpayments-sa
+      terminationGracePeriodSeconds: 90 # Give Kafka Streams time to shut down gracefully.
+      containers:
+      - name: processpayments
+        # IMPORTANT: Replace with the path to your container image.
+        image: us-central1-docker.pkg.dev/kubecon-kafka/app-images/processpayments:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        # Environment variables to configure the application.
+        # These override the defaults in application.properties.
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "kubernetes"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "bootstrap.kafka.us-central1.managedkafka.kubecon-kafka.cloud.goog:9092"
+        - name: KAFKA_TOPIC_INPUT
+          value: "payments"
+        - name: KAFKA_TOPIC_OUTPUT
+          value: "total.payments"
+        - name: KAFKA_STORE_NAME
+          value: "payment-totals-store"
+        # Mount the persistent volume for the Kafka Streams state store.
+        volumeMounts:
+        - name: state-store
+          mountPath: /var/lib/kafka-streams # A directory for the state store
+        # Recommended for production to ensure resource availability.
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+  # This template defines the Persistent Volume that will be created for EACH pod.
+  volumeClaimTemplates:
+  - metadata:
+      name: state-store
+    spec:
+      accessModes: [ "ReadWriteOnce" ] # The volume can be mounted by a single node.
+      storageClassName: "standard-rwo" # GKE's default regional persistent disk.
+      resources:
+        requests:
+          storage: 10Gi # The size of the persistent disk for each pod's state store.
+
+
